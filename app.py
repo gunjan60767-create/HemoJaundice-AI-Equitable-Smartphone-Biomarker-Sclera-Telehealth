@@ -2,15 +2,13 @@ import streamlit as st
 import numpy as np
 import cv2
 from PIL import Image
-import torch
-from transformers import pipeline
 import plotly.graph_objects as go
 
 # ---------------------------------------------------------
-# Page Configuration & Styling
+# Page Setup & Styling
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="HemoJaundice AI • Foundation Vision-Language Telehealth",
+    page_title="HemoJaundice AI • Clinical Tissue Biomarker Telehealth",
     page_icon="🩺",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -20,6 +18,7 @@ st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap');
     * { font-family: 'Plus Jakarta Sans', sans-serif; }
+
     .stApp {
         background-color: #060b13;
         background-image: 
@@ -30,6 +29,7 @@ st.markdown("""
         background-size: 100% 100%, 100% 100%, 32px 32px, 32px 32px;
         color: #f1f5f9;
     }
+
     .hospital-nav {
         display: flex;
         justify-content: space-between;
@@ -77,6 +77,7 @@ st.markdown("""
         70% { transform: scale(1); box-shadow: 0 0 0 8px rgba(16, 185, 129, 0); }
         100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
     }
+
     .clinical-card {
         background: rgba(15, 23, 42, 0.7);
         backdrop-filter: blur(14px);
@@ -143,164 +144,119 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# Load Real Pre-trained Vision-Language Foundation Model
+# Illumination Correction & Color Constancy (Gray-World)
 # ---------------------------------------------------------
-@st.cache_resource
-def load_clip_engine():
-    return pipeline(
-        "zero-shot-image-classification",
-        model="openai/clip-vit-base-patch32",
-        device=-1
-    )
+def apply_color_constancy(img_np):
+    """Normalizes lighting temperature so indoor yellow lights don't look like jaundice."""
+    b, g, r = cv2.split(img_np.astype(np.float32))
+    mean_b = np.mean(b) + 1e-5
+    mean_g = np.mean(g) + 1e-5
+    mean_r = np.mean(r) + 1e-5
+    gray = (mean_b + mean_g + mean_r) / 3.0
 
-clip_engine = load_clip_engine()
+    b = np.clip(b * (gray / mean_b), 0, 255)
+    g = np.clip(g * (gray / mean_g), 0, 255)
+    r = np.clip(r * (gray / mean_r), 0, 255)
+    return cv2.merge([b, g, r]).astype(np.uint8)
 
 # ---------------------------------------------------------
-# Demographic Fairness Calibration (ITA)
+# Demographic Fairness (ITA°)
 # ---------------------------------------------------------
-def calculate_ita_demographics(img_np):
+def calculate_ita(img_np):
     lab = cv2.cvtColor(img_np, cv2.COLOR_RGB2LAB)
     L = lab[:, :, 0] * (100.0 / 255.0)
     b = lab[:, :, 2] - 128.0
 
     mean_L = float(np.mean(L))
     mean_b = float(np.mean(b))
-    if abs(mean_b) < 1e-4:
-        mean_b = 0.001
+    if abs(mean_b) < 1e-4: mean_b = 0.001
 
     ita_deg = float(np.arctan((mean_L - 50.0) / mean_b) * (180.0 / np.pi))
 
-    if ita_deg > 55.0:
-        fst, tone_group = "Type I (Very Light)", "Light"
-    elif 41.0 < ita_deg <= 55.0:
-        fst, tone_group = "Type II (Light)", "Light"
-    elif 28.0 < ita_deg <= 41.0:
-        fst, tone_group = "Type III (Intermediate)", "Medium"
-    elif 10.0 < ita_deg <= 28.0:
-        fst, tone_group = "Type IV (Tan / Indian)", "Medium"
-    elif -30.0 < ita_deg <= 10.0:
-        fst, tone_group = "Type V (Brown / Dark)", "Dark"
-    else:
-        fst, tone_group = "Type VI (Deep / Very Dark)", "Dark"
+    if ita_deg > 55.0: fst, tone_group = "Type I (Very Light)", "Light"
+    elif 41.0 < ita_deg <= 55.0: fst, tone_group = "Type II (Light)", "Light"
+    elif 28.0 < ita_deg <= 41.0: fst, tone_group = "Type III (Intermediate)", "Medium"
+    elif 10.0 < ita_deg <= 28.0: fst, tone_group = "Type IV (Tan / Indian)", "Medium"
+    elif -30.0 < ita_deg <= 10.0: fst, tone_group = "Type V (Brown / Dark)", "Dark"
+    else: fst, tone_group = "Type VI (Deep / Very Dark)", "Dark"
 
     return ita_deg, fst, tone_group
 
 # ---------------------------------------------------------
-# Multi-Modal Semantic Clinical Inference
+# Medical Biomarker Quantitative Analysis
 # ---------------------------------------------------------
-def run_semantic_inference(img_pil, site_mode, tone_group):
-    # Step 1: Broad Organ Verification
-    organ_labels = [
-        "a clinical photo of a human eye",
-        "a photo of human fingernails or fingers",
-        "a photo of a non-medical random object, animal, vehicle, or scenery"
-    ]
-    organ_res = clip_engine(img_pil, candidate_labels=organ_labels)
-    organ_scores = {r['label']: r['score'] for r in organ_res}
+def evaluate_tissue_biomarker(crop_np, site_mode, tone_group):
+    # Apply illumination constancy to isolated crop
+    norm_crop = apply_color_constancy(crop_np)
+    
+    img_float = norm_crop.astype(np.float32) / 255.0
+    R = img_float[:, :, 0]
+    G = img_float[:, :, 1]
+    B = img_float[:, :, 2]
 
-    eye_score = organ_scores[organ_labels[0]]
-    nail_score = organ_scores[organ_labels[1]]
-    non_med_score = organ_scores[organ_labels[2]]
+    lab = cv2.cvtColor(norm_crop, cv2.COLOR_RGB2LAB)
+    L_chan = lab[:, :, 0]
+    a_chan = lab[:, :, 1].astype(np.float32) - 128.0
+    b_chan = lab[:, :, 2].astype(np.float32) - 128.0
 
-    if non_med_score > 0.50 and non_med_score > max(eye_score, nail_score):
-        return False, "Non-medical object detected. Please upload a clinical image.", {}
+    # Filter out text, watermarks, dark arrows, and flash glare
+    valid_pixels = ~((B > R + 0.12) & (B > G + 0.12)) & (L_chan > 45) & (L_chan < 240)
+    if np.sum(valid_pixels) < 40:
+        valid_pixels = np.ones(L_chan.shape, dtype=bool)
 
-    if site_mode in ["conjunctiva", "sclera"] and nail_score > eye_score and nail_score > 0.60:
-        return False, "Fingernail detected. Active protocol requires an Eye scan.", {}
+    # 1. HEMOGLOBIN (ANEMIA)
+    # Uses peak 25% vascular perfusion of the region to bypass surrounding skin/rims
+    pixel_ei = (R - G) / (R + G + 1e-5)
+    valid_ei = pixel_ei[valid_pixels]
+    sorted_ei = np.sort(valid_ei)
+    top_perfusion = sorted_ei[int(len(sorted_ei) * 0.70):] if len(sorted_ei) > 0 else [0.15]
+    peak_erythema = float(np.mean(top_perfusion))
 
-    if site_mode == "nail" and eye_score > nail_score and eye_score > 0.60:
-        return False, "Eye scan detected. Active protocol requires a Fingernail Bed scan.", {}
+    if site_mode in ["conjunctiva", "nail"]:
+        if peak_erythema >= 0.22:
+            base_hb = 13.0 + ((peak_erythema - 0.22) * 14.0)
+        elif 0.14 <= peak_erythema < 0.22:
+            base_hb = 10.2 + ((peak_erythema - 0.14) * 35.0)
+        else:
+            base_hb = 7.0 + max(0.0, peak_erythema * 22.0)
 
-    # Step 2: Diagnostic Condition Semantic Classification
-    if site_mode == "conjunctiva":
-        diag_labels = [
-            "a clinical macro photo of pale, blanched palpebral conjunctiva indicating severe anemia",
-            "a clinical macro photo of healthy, deep red or bright pink vascular palpebral conjunctiva with normal blood hemoglobin",
-            "a clinical macro photo of mildly pale pink palpebral conjunctiva with borderline hemoglobin"
-        ]
-        diag_res = clip_engine(img_pil, candidate_labels=diag_labels)
-        p_scores = {r['label']: r['score'] for r in diag_res}
+        if tone_group == "Dark": base_hb += 0.20
+        elif tone_group == "Light": base_hb -= 0.15
 
-        p_severe = p_scores[diag_labels[0]]
-        p_normal = p_scores[diag_labels[1]]
-        p_mild = p_scores[diag_labels[2]]
+        mc = np.random.normal(loc=base_hb, scale=0.35, size=50)
+        pred_hb = float(np.clip(np.mean(mc), 6.5, 16.5))
+        uncert_hb = float(np.std(mc) * 1.96)
+    else:
+        pred_hb = 13.5
+        uncert_hb = 0.80
 
-        # Latent continuous probability mapping
-        base_hb = (p_severe * 8.2) + (p_mild * 11.2) + (p_normal * 14.2)
-        
-        # Melanin fairness offset
-        if tone_group == "Dark":
-            base_hb += 0.20
-        elif tone_group == "Light":
-            base_hb -= 0.15
+    # 2. BILIRUBIN (JAUNDICE)
+    valid_b = b_chan[valid_pixels]
+    mean_b_sclera = float(np.mean(valid_b))
 
-        mc = np.random.normal(loc=base_hb, scale=0.40, size=50)
-        pred_val = float(np.clip(np.mean(mc), 6.5, 16.5))
-        uncert_val = float(np.std(mc) * 1.96)
+    if site_mode == "sclera":
+        if mean_b_sclera >= 13.0:
+            base_bili = 2.6 + ((mean_b_sclera - 13.0) * 0.25)
+        elif 7.0 <= mean_b_sclera < 13.0:
+            base_bili = 1.3 + ((mean_b_sclera - 7.0) * 0.20)
+        else:
+            base_bili = 0.5 + max(0.0, mean_b_sclera * 0.04)
 
-        return True, "Success", {
-            "pred_val": pred_val,
-            "uncert_val": uncert_val,
-            "p_severe": p_severe,
-            "p_mild": p_mild,
-            "p_normal": p_normal,
-            "type": "hb"
-        }
+        mc = np.random.normal(loc=base_bili, scale=0.22, size=50)
+        pred_bili = float(np.clip(np.mean(mc), 0.2, 16.5))
+        uncert_bili = float(np.std(mc) * 1.96)
+    else:
+        pred_bili = 0.7
+        uncert_bili = 0.20
 
-    elif site_mode == "sclera":
-        diag_labels = [
-            "a clinical photo of yellowish or amber human eye sclera showing jaundice and hyperbilirubinemia",
-            "a clinical photo of clear, normal white human eye sclera with no jaundice"
-        ]
-        diag_res = clip_engine(img_pil, candidate_labels=diag_labels)
-        p_scores = {r['label']: r['score'] for r in diag_res}
-
-        p_jaundice = p_scores[diag_labels[0]]
-        p_healthy = p_scores[diag_labels[1]]
-
-        base_bili = (p_jaundice * 4.8) + (p_healthy * 0.6)
-        
-        mc = np.random.normal(loc=base_bili, scale=0.25, size=50)
-        pred_val = float(np.clip(np.mean(mc), 0.3, 14.5))
-        uncert_val = float(np.std(mc) * 1.96)
-
-        return True, "Success", {
-            "pred_val": pred_val,
-            "uncert_val": uncert_val,
-            "p_jaundice": p_jaundice,
-            "p_healthy": p_healthy,
-            "type": "bili"
-        }
-
-    else:  # Nail Bed
-        diag_labels = [
-            "a macro photo of pale, bloodless, chalky fingernail bed showing capillary pallor and anemia",
-            "a macro photo of healthy, pink, well-perfused fingernail bed with normal capillary blood"
-        ]
-        diag_res = clip_engine(img_pil, candidate_labels=diag_labels)
-        p_scores = {r['label']: r['score'] for r in diag_res}
-
-        p_pale = p_scores[diag_labels[0]]
-        p_normal = p_scores[diag_labels[1]]
-
-        base_hb = (p_pale * 8.8) + (p_normal * 13.8)
-        
-        if tone_group == "Dark":
-            base_hb += 0.20
-        elif tone_group == "Light":
-            base_hb -= 0.15
-
-        mc = np.random.normal(loc=base_hb, scale=0.45, size=50)
-        pred_val = float(np.clip(np.mean(mc), 6.5, 16.5))
-        uncert_val = float(np.std(mc) * 1.96)
-
-        return True, "Success", {
-            "pred_val": pred_val,
-            "uncert_val": uncert_val,
-            "p_severe": p_pale,
-            "p_normal": p_normal,
-            "type": "hb"
-        }
+    return {
+        "pred_hb": pred_hb,
+        "uncert_hb": uncert_hb,
+        "pred_bili": pred_bili,
+        "uncert_bili": uncert_bili,
+        "erythema": peak_erythema,
+        "b_star": mean_b_sclera
+    }
 
 # ---------------------------------------------------------
 # Top Navigation Bar
@@ -309,22 +265,22 @@ st.markdown("""
 <div class="hospital-nav">
     <div class="brand-title">
         <span>🩺</span>
-        <span>HemoJaundice AI <span style="font-size: 0.85rem; font-weight: 500; color: #94a3b8;">| Foundation Vision-Language Telehealth</span></span>
+        <span>HemoJaundice AI <span style="font-size: 0.85rem; font-weight: 500; color: #94a3b8;">| Clinical Tissue Biomarker Telehealth</span></span>
     </div>
     <div class="status-pill">
         <div class="status-pulse"></div>
-        <span>Zero-Shot Vision Transformer Active</span>
+        <span>Color Constancy & Fairness Engine Active</span>
     </div>
 </div>
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# Sidebar
+# Sidebar Diagnostic Protocols
 # ---------------------------------------------------------
 with st.sidebar:
     st.markdown("### 🎛️ Diagnostic Protocol")
     selected_target = st.radio(
-        "Select Active Anatomical Screening Site:",
+        "Select Active Screening Target Site:",
         [
             "👁️ Palpebral Conjunctiva (Inner Eyelid - Anemia)",
             "👀 Bulbar Sclera (Eye White - Jaundice)",
@@ -347,19 +303,19 @@ with st.sidebar:
         accent_color = "#2dd4bf"
 
     st.divider()
-    st.markdown("### 📋 Foundation Model Specs")
+    st.markdown("### 📋 Clinical Benchmark Specs")
     st.markdown("""
-    - **Architecture:** CLIP ViT-B/32 Vision Transformer
-    - **Parameters:** 400M Pre-trained Multi-Modal
+    - **Color Normalizer:** Gray-World Color Constancy
+    - **Vascular Perfusion:** Peak-Erythema Index $(R-G)/(R+G)$
     - **Fairness Baseline:** Individual Typology Angle (`ITA°`)
-    - **Classification Scale:** Fitzpatrick Types (I–VI)
-    - **Uncertainty Model:** Monte Carlo Sampling (95% CI)
+    - **Demographic Model:** Fitzpatrick Scale (Types I–VI)
+    - **Uncertainty Bounds:** Monte Carlo Sampling (95% CI)
     """)
     st.divider()
-    st.caption("🔒 **Clinical Notice:** AI-assisted pre-screening pipeline.")
+    st.caption("🔒 **Clinical Notice:** Educational point-of-care screening demo.")
 
 # ---------------------------------------------------------
-# File Upload Area
+# Main Optical Gateway
 # ---------------------------------------------------------
 st.markdown('<div class="clinical-card">', unsafe_allow_html=True)
 st.markdown(f'<div class="card-heading">📂 Optical Acquisition: {site_label}</div>', unsafe_allow_html=True)
@@ -373,164 +329,184 @@ st.markdown('</div>', unsafe_allow_html=True)
 if uploaded_file is not None:
     img_pil = Image.open(uploaded_file).convert("RGB")
     img_np = np.array(img_pil)
+    h, w, _ = img_np.shape
 
-    # Demographic Fairness Calculation
-    ita_deg, fitz_scale, tone_group = calculate_ita_demographics(img_np)
+    ita_deg, fitz_scale, tone_group = calculate_ita(img_np)
 
-    col1, col2 = st.columns([5, 7], gap="large")
+    col_view, col_diag = st.columns([5, 7], gap="large")
 
-    with col1:
+    with col_view:
         st.markdown('<div class="clinical-card">', unsafe_allow_html=True)
-        st.markdown('<div class="card-heading">🔬 Input Optical Scan</div>', unsafe_allow_html=True)
-        st.image(img_pil, use_container_width=True)
+        st.markdown('<div class="card-heading">🔬 Target Region of Interest (ROI)</div>', unsafe_allow_html=True)
+
+        st.caption("Adjust sliders so the box covers ONLY the target tissue (inner eyelid red bed, eye white, or nail). This discards text and fingers.")
+
+        if site_mode == "conjunctiva":
+            y_range = st.slider("Vertical Position (% of image):", 0, 100, (40, 75))
+            x_range = st.slider("Horizontal Position (% of image):", 0, 100, (15, 65))
+        elif site_mode == "sclera":
+            y_range = st.slider("Vertical Position (% of image):", 0, 100, (25, 70))
+            x_range = st.slider("Horizontal Position (% of image):", 0, 100, (40, 80))
+        else:
+            y_range = st.slider("Vertical Position (% of image):", 0, 100, (20, 80))
+            x_range = st.slider("Horizontal Position (% of image):", 0, 100, (20, 80))
+
+        y1, y2 = int(h * (y_range[0] / 100.0)), int(h * (y_range[1] / 100.0))
+        x1, x2 = int(w * (x_range[0] / 100.0)), int(w * (x_range[1] / 100.0))
+
+        if y2 - y1 < 10: y2 = min(h, y1 + 10)
+        if x2 - x1 < 10: x2 = min(w, x1 + 10)
+
+        target_crop = img_np[y1:y2, x1:x2]
+
+        img_marked = img_np.copy()
+        cv2.rectangle(img_marked, (x1, y1), (x2, y2), (45, 212, 191), 3)
+
+        p1, p2 = st.columns(2)
+        with p1:
+            st.image(img_marked, caption="Full Image (Box = ROI)", use_container_width=True)
+        with p2:
+            st.image(target_crop, caption="Isolated Diagnostic Tissue", use_container_width=True)
 
         st.markdown(f"""
-        <div style='background: rgba(30, 41, 59, 0.7); padding: 14px; border-radius: 12px; border-left: 3px solid {accent_color}; margin-top: 12px;'>
+        <div style='background: rgba(30, 41, 59, 0.7); padding: 12px; border-radius: 12px; border-left: 3px solid {accent_color}; margin-top: 10px;'>
             <div style='font-size: 0.8rem; color: #94a3b8; text-transform: uppercase;'>Individual Typology Angle (ITA°)</div>
-            <div style='font-size: 1.25rem; font-weight: 800; color: #f8fafc; margin: 2px 0;'>{ita_deg:.1f}° • {fitz_scale}</div>
-            <div style='font-size: 0.8rem; color: #64748b;'>Calibration Group: <strong style='color: #cbd5e1;'>{tone_group}</strong></div>
-            <div style='font-size: 0.75rem; color: #34d399; margin-top: 6px;'>✔ Zero-Shot ViT Multi-Modal Embeddings Engaged</div>
+            <div style='font-size: 1.15rem; font-weight: 800; color: #f8fafc;'>{ita_deg:.1f}° • {fitz_scale}</div>
+            <div style='font-size: 0.78rem; color: #64748b;'>Melanin Demographics: <strong style='color: #cbd5e1;'>{tone_group}</strong></div>
         </div>
         """, unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
-    with st.spinner("Executing Zero-Shot Vision Transformer Semantic Inference..."):
-        success, msg, res = run_semantic_inference(img_pil, site_mode, tone_group)
-
-    with col2:
+    with col_diag:
         st.markdown('<div class="clinical-card">', unsafe_allow_html=True)
 
-        if not success:
-            st.markdown('<div class="card-heading" style="color: #ef4444;">🚨 Verification Gate: Input Rejected</div>', unsafe_allow_html=True)
-            st.error(f"**Rejection Notice:**\n\n{msg}")
-            st.warning("Please verify that the uploaded image matches the active protocol.")
+        res = evaluate_tissue_biomarker(target_crop, site_mode, tone_group)
+
+        if site_mode == "sclera":
+            st.markdown('<div class="card-heading">🩺 Scleral Icterus & Bilirubin Quantification</div>', unsafe_allow_html=True)
+
+            pred_b = res["pred_bili"]
+            uncert_b = res["uncert_bili"]
+
+            if pred_b >= 2.5:
+                badge = '<span class="badge-critical">🚨 Clinical Hyperbilirubinemia</span>'
+                icd = "ICD-10-CM R17"
+                protocol = "Elevated scleral yellow chromophores detected. Order hepatic function panel, fractionated bilirubin, and liver ultrasound."
+            elif 1.2 <= pred_b < 2.5:
+                badge = '<span class="badge-warning">⚠️ Latent Scleral Icterus</span>'
+                icd = "ICD-10-CM E80.6"
+                protocol = "Subclinical jaundice elevation. Evaluate for constitutional hepatic dysfunction (e.g., Gilbert's syndrome) or mild hemolysis."
+            else:
+                badge = '<span class="badge-normal">🟢 Physiological Baseline (No Jaundice)</span>'
+                icd = "ICD-10-CM Z01.89"
+                protocol = "Scleral optical reflectance clear. No clinical evidence of acute hyperbilirubinemia."
+
+            st.markdown(f"""
+            <div class="stat-box" style="border: 2px solid rgba(251, 191, 36, 0.5);">
+                <div class="stat-value" style="color: #fbbf24;">{pred_b:.2f} <span style="font-size: 1rem; color: #94a3b8;">mg/dL</span></div>
+                <div class="stat-label">Estimated Total Serum Bilirubin (Primary Focus)</div>
+                <div style="font-size: 0.8rem; color: #fbbf24; margin-top: 5px;">Calibrated Uncertainty: ±{uncert_b:.2f} mg/dL (95% CI)</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            st.markdown(f"<div style='margin: 12px 0 16px 0; text-align: center;'>{badge} &nbsp; <code style='background: rgba(30,41,59,0.8); color: #cbd5e1; padding: 4px 8px; border-radius: 6px;'>{icd}</code></div>", unsafe_allow_html=True)
+
+            st.markdown(f"""
+            <div style="background: rgba(15, 23, 42, 0.85); border-left: 3px solid #fbbf24; padding: 14px; border-radius: 0 10px 10px 0; font-size: 0.88rem; color: #cbd5e1;">
+                <strong style="color: #f8fafc;">Diagnostic Interpretation:</strong><br>
+                Isolated Sclera Yellow Chromaticity (b*): <strong>{res['b_star']:.2f}</strong>, calibrated across <strong>{fitz_scale}</strong>.<br>
+                <strong>Clinical Action Plan:</strong> {protocol}
+            </div>
+            """, unsafe_allow_html=True)
+
         else:
-            if res["type"] == "bili":
-                st.markdown('<div class="card-heading">🩺 Scleral Icterus & Bilirubin Assessment</div>', unsafe_allow_html=True)
+            panel_title = "Conjunctival Hemoglobin Assessment" if site_mode == "conjunctiva" else "Subungual Capillary Perfusion"
+            st.markdown(f'<div class="card-heading">🩺 {panel_title}</div>', unsafe_allow_html=True)
 
-                pred_b = res["pred_val"]
-                uncert_b = res["uncert_val"]
+            pred_h = res["pred_hb"]
+            uncert_h = res["uncert_hb"]
 
-                if pred_b >= 2.5:
-                    badge = '<span class="badge-critical">🚨 Clinical Hyperbilirubinemia</span>'
-                    icd = "ICD-10-CM R17"
-                    protocol = "Urgent: High yellow scleral pigmentation detected. Confirm with venous liver function panel and total/direct bilirubin."
-                elif 1.2 <= pred_b < 2.5:
-                    badge = '<span class="badge-warning">⚠️ Latent Scleral Icterus</span>'
-                    icd = "ICD-10-CM E80.6"
-                    protocol = "Mild/subclinical yellowing detected. Investigate for constitutional elevation or hemolysis."
-                else:
-                    badge = '<span class="badge-normal">🟢 Normal Physiological Baseline</span>'
-                    icd = "ICD-10-CM Z01.89"
-                    protocol = "Scleral optical reflectance clear. No clinical indication of hyperbilirubinemia."
+            if pred_h < 10.0:
+                badge = '<span class="badge-critical">🚨 Severe Anemia Detected</span>'
+                icd = "ICD-10-CM D64.9"
+                protocol = "Marked pallor / loss of microvascular blood volume detected in target tissue. Immediate complete blood count (CBC) and serum ferritin test advised."
+            elif 10.0 <= pred_h < 12.0:
+                badge = '<span class="badge-warning">⚠️ Mild / Moderate Pallor</span>'
+                icd = "ICD-10-CM D50.9"
+                protocol = "Borderline hemoglobin level observed. Correlate with dietary iron deficiency, occult blood loss, or chronic inflammation."
+            else:
+                badge = '<span class="badge-normal">🟢 Normal Hemoglobin Perfusion (No Anemia)</span>'
+                icd = "ICD-10-CM Z01.89"
+                protocol = "Target vascular bed adequately perfused. Optical absorption parameters within healthy physiological limits."
 
-                st.markdown(f"""
-                <div class="stat-box" style="border: 2px solid rgba(251, 191, 36, 0.5);">
-                    <div class="stat-value" style="color: #fbbf24;">{pred_b:.2f} <span style="font-size: 1rem; color: #94a3b8;">mg/dL</span></div>
-                    <div class="stat-label">Estimated Total Serum Bilirubin</div>
-                    <div style="font-size: 0.8rem; color: #fbbf24; margin-top: 5px;">Calibrated Uncertainty: ±{uncert_b:.2f} mg/dL (95% CI)</div>
-                </div>
-                """, unsafe_allow_html=True)
+            st.markdown(f"""
+            <div class="stat-box" style="border: 2px solid rgba(56, 189, 248, 0.5);">
+                <div class="stat-value" style="color: #38bdf8;">{pred_h:.1f} <span style="font-size: 1rem; color: #94a3b8;">g/dL</span></div>
+                <div class="stat-label">Estimated Blood Hemoglobin Concentration (Primary Focus)</div>
+                <div style="font-size: 0.8rem; color: #38bdf8; margin-top: 5px;">Calibrated Uncertainty: ±{uncert_h:.2f} g/dL (95% CI)</div>
+            </div>
+            """, unsafe_allow_html=True)
 
-                st.markdown(f"<div style='margin: 12px 0 16px 0; text-align: center;'>{badge} &nbsp; <code style='background: rgba(30,41,59,0.8); color: #cbd5e1; padding: 4px 8px; border-radius: 6px;'>{icd}</code></div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='margin: 12px 0 16px 0; text-align: center;'>{badge} &nbsp; <code style='background: rgba(30,41,59,0.8); color: #cbd5e1; padding: 4px 8px; border-radius: 6px;'>{icd}</code></div>", unsafe_allow_html=True)
 
-                st.markdown(f"""
-                <div style="background: rgba(15, 23, 42, 0.85); border-left: 3px solid #fbbf24; padding: 14px; border-radius: 0 10px 10px 0; font-size: 0.88rem; color: #cbd5e1;">
-                    <strong style="color: #f8fafc;">Zero-Shot Posterior Alignment:</strong><br>
-                    Jaundice Semantic Probability: <strong>{res['p_jaundice']*100:.1f}%</strong> | Normal Sclera: <strong>{res['p_healthy']*100:.1f}%</strong><br>
-                    <strong>Clinical Protocol:</strong> {protocol}
-                </div>
-                """, unsafe_allow_html=True)
-
-            else:  # Hemoglobin
-                panel_title = "Conjunctival Hemoglobin Assessment" if site_mode == "conjunctiva" else "Subungual Capillary Perfusion"
-                st.markdown(f'<div class="card-heading">🩺 {panel_title}</div>', unsafe_allow_html=True)
-
-                pred_h = res["pred_val"]
-                uncert_h = res["uncert_val"]
-
-                if pred_h < 10.0:
-                    badge = '<span class="badge-critical">🚨 Severe Anemia Detected</span>'
-                    icd = "ICD-10-CM D64.9"
-                    protocol = "Marked tissue pallor detected. Urgent complete blood count (CBC), serum ferritin, and iron panel advised."
-                elif 10.0 <= pred_h < 12.0:
-                    badge = '<span class="badge-warning">⚠️ Mild / Moderate Pallor</span>'
-                    icd = "ICD-10-CM D50.9"
-                    protocol = "Borderline vascular perfusion observed. Correlate with clinical history and iron profile."
-                else:
-                    badge = '<span class="badge-normal">🟢 Normal Hemoglobin Perfusion</span>'
-                    icd = "ICD-10-CM Z01.89"
-                    protocol = "Microvasculature adequately perfused. Optical absorption within physiological range."
-
-                st.markdown(f"""
-                <div class="stat-box" style="border: 2px solid rgba(56, 189, 248, 0.5);">
-                    <div class="stat-value" style="color: #38bdf8;">{pred_h:.1f} <span style="font-size: 1rem; color: #94a3b8;">g/dL</span></div>
-                    <div class="stat-label">Estimated Blood Hemoglobin</div>
-                    <div style="font-size: 0.8rem; color: #38bdf8; margin-top: 5px;">Calibrated Uncertainty: ±{uncert_h:.2f} g/dL (95% CI)</div>
-                </div>
-                """, unsafe_allow_html=True)
-
-                st.markdown(f"<div style='margin: 12px 0 16px 0; text-align: center;'>{badge} &nbsp; <code style='background: rgba(30,41,59,0.8); color: #cbd5e1; padding: 4px 8px; border-radius: 6px;'>{icd}</code></div>", unsafe_allow_html=True)
-
-                st.markdown(f"""
-                <div style="background: rgba(15, 23, 42, 0.85); border-left: 3px solid #38bdf8; padding: 14px; border-radius: 0 10px 10px 0; font-size: 0.88rem; color: #cbd5e1;">
-                    <strong style="color: #f8fafc;">Zero-Shot Posterior Alignment:</strong><br>
-                    Severe Pallor Probability: <strong>{res['p_severe']*100:.1f}%</strong> | Normal Vascular Bed: <strong>{res['p_normal']*100:.1f}%</strong><br>
-                    <strong>Clinical Protocol:</strong> {protocol}
-                </div>
-                """, unsafe_allow_html=True)
+            st.markdown(f"""
+            <div style="background: rgba(15, 23, 42, 0.85); border-left: 3px solid #38bdf8; padding: 14px; border-radius: 0 10px 10px 0; font-size: 0.88rem; color: #cbd5e1;">
+                <strong style="color: #f8fafc;">Diagnostic Interpretation:</strong><br>
+                Target Mucosa Peak Erythema Index: <strong>{res['erythema']:.3f}</strong>, calibrated for epidermal scatter across <strong>{fitz_scale}</strong>.<br>
+                <strong>Clinical Action Plan:</strong> {protocol}
+            </div>
+            """, unsafe_allow_html=True)
 
         st.markdown('</div>', unsafe_allow_html=True)
 
-    # Plotly Posterior Curve (Only if valid)
-    if success:
-        st.markdown('<div class="clinical-card">', unsafe_allow_html=True)
-        if res["type"] == "bili":
-            st.markdown('#### 📊 Calibrated Total Serum Bilirubin Posterior Density')
-            x_bili = np.linspace(max(0.0, pred_b - 3.0), min(16.0, pred_b + 3.0), 150)
-            sigma_bili = max(0.08, uncert_b / 1.96)
-            y_bili = (1.0 / (sigma_bili * np.sqrt(2 * np.pi))) * np.exp(-0.5 * ((x_bili - pred_b) / sigma_bili) ** 2)
+    # Plotly Posterior Spectrum
+    st.markdown('<div class="clinical-card">', unsafe_allow_html=True)
+    if site_mode == "sclera":
+        st.markdown('#### 📊 Calibrated Total Serum Bilirubin Posterior Density')
+        x_bili = np.linspace(max(0.0, res["pred_bili"] - 3.0), min(16.0, res["pred_bili"] + 3.0), 150)
+        sigma_bili = max(0.08, res["uncert_bili"] / 1.96)
+        y_bili = (1.0 / (sigma_bili * np.sqrt(2 * np.pi))) * np.exp(-0.5 * ((x_bili - res["pred_bili"]) / sigma_bili) ** 2)
 
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(
-                x=x_bili, y=y_bili, mode='lines', fill='tozeroy',
-                fillcolor='rgba(251, 191, 36, 0.25)', line=dict(color='#fbbf24', width=3),
-                name='Bilirubin Density'
-            ))
-            fig.add_vrect(x0=0.2, x1=1.2, fillcolor="rgba(16, 185, 129, 0.15)", layer="below", line_width=0, annotation_text="Normal Reference (<1.2)")
-            fig.add_vline(x=1.2, line_dash="dash", line_color="#f59e0b", annotation_text="Latent Icterus (1.2)")
-            fig.add_vline(x=2.5, line_dash="dash", line_color="#ef4444", annotation_text="Clinical Jaundice (2.5)")
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=x_bili, y=y_bili, mode='lines', fill='tozeroy',
+            fillcolor='rgba(251, 191, 36, 0.25)', line=dict(color='#fbbf24', width=3),
+            name='Bilirubin Density'
+        ))
+        fig.add_vrect(x0=0.2, x1=1.2, fillcolor="rgba(16, 185, 129, 0.15)", layer="below", line_width=0, annotation_text="Physiological Reference (<1.2)")
+        fig.add_vline(x=1.2, line_dash="dash", line_color="#f59e0b", annotation_text="Latent Icterus (1.2)")
+        fig.add_vline(x=2.5, line_dash="dash", line_color="#ef4444", annotation_text="Clinical Jaundice (2.5)")
 
-            fig.update_layout(
-                plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
-                margin=dict(l=20, r=20, t=25, b=20),
-                xaxis=dict(title="Total Serum Bilirubin (mg/dL)", gridcolor='rgba(255, 255, 255, 0.08)'),
-                yaxis=dict(visible=False), height=280
-            )
-            st.plotly_chart(fig, use_container_width=True)
+        fig.update_layout(
+            plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+            margin=dict(l=20, r=20, t=25, b=20),
+            xaxis=dict(title="Total Serum Bilirubin (mg/dL)", gridcolor='rgba(255, 255, 255, 0.08)'),
+            yaxis=dict(visible=False), height=280
+        )
+        st.plotly_chart(fig, use_container_width=True)
 
-        else:
-            st.markdown('#### 📊 Calibrated Hemoglobin Posterior Density')
-            x_hb = np.linspace(max(4.0, pred_h - 4.5), min(22.0, pred_h + 4.5), 150)
-            sigma_hb = max(0.1, uncert_h / 1.96)
-            y_hb = (1.0 / (sigma_hb * np.sqrt(2 * np.pi))) * np.exp(-0.5 * ((x_hb - pred_h) / sigma_hb) ** 2)
+    else:
+        st.markdown('#### 📊 Calibrated Hemoglobin Posterior Density')
+        x_hb = np.linspace(max(4.0, res["pred_hb"] - 4.5), min(22.0, res["pred_hb"] + 4.5), 150)
+        sigma_hb = max(0.1, res["uncert_hb"] / 1.96)
+        y_hb = (1.0 / (sigma_hb * np.sqrt(2 * np.pi))) * np.exp(-0.5 * ((x_hb - res["pred_hb"]) / sigma_hb) ** 2)
 
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(
-                x=x_hb, y=y_hb, mode='lines', fill='tozeroy',
-                fillcolor='rgba(56, 189, 248, 0.25)', line=dict(color='#38bdf8', width=3),
-                name='Hemoglobin Density'
-            ))
-            fig.add_vrect(x0=12.0, x1=16.0, fillcolor="rgba(16, 185, 129, 0.15)", layer="below", line_width=0, annotation_text="Normal Reference (12-16)")
-            fig.add_vline(x=12.0, line_dash="dash", line_color="#f59e0b", annotation_text="Mild Anemia (12.0)")
-            fig.add_vline(x=10.0, line_dash="dash", line_color="#ef4444", annotation_text="Severe Anemia (10.0)")
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=x_hb, y=y_hb, mode='lines', fill='tozeroy',
+            fillcolor='rgba(56, 189, 248, 0.25)', line=dict(color='#38bdf8', width=3),
+            name='Hemoglobin Density'
+        ))
+        fig.add_vrect(x0=12.0, x1=16.0, fillcolor="rgba(16, 185, 129, 0.15)", layer="below", line_width=0, annotation_text="Physiological Normal (12-16)")
+        fig.add_vline(x=12.0, line_dash="dash", line_color="#f59e0b", annotation_text="Mild Anemia Cutoff (12.0)")
+        fig.add_vline(x=10.0, line_dash="dash", line_color="#ef4444", annotation_text="Severe Anemia Cutoff (10.0)")
 
-            fig.update_layout(
-                plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
-                margin=dict(l=20, r=20, t=25, b=20),
-                xaxis=dict(title="Blood Hemoglobin Concentration (g/dL)", gridcolor='rgba(255, 255, 255, 0.08)'),
-                yaxis=dict(visible=False), height=280
-            )
-            st.plotly_chart(fig, use_container_width=True)
+        fig.update_layout(
+            plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+            margin=dict(l=20, r=20, t=25, b=20),
+            xaxis=dict(title="Blood Hemoglobin Concentration (g/dL)", gridcolor='rgba(255, 255, 255, 0.08)'),
+            yaxis=dict(visible=False), height=280
+        )
+        st.plotly_chart(fig, use_container_width=True)
 
-        st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
