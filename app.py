@@ -18,7 +18,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ---------- CUSTOM CSS (unchanged) ----------
+# ---------- CUSTOM CSS ----------
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
@@ -234,23 +234,18 @@ def generate_synthetic_data_for_mode(mode, n_samples=300):
 
         # Mode-specific target generation
         if mode == "Sclera":
-            # Jaundice: bilirubin mainly from b* (yellow) and pallor
             bilirubin = 0.5 + 0.025 * (b + 50) + 0.6 * pallor_val + np.random.normal(0, 0.3)
             bilirubin = np.clip(bilirubin, 0.2, 20.0)
-            # Hemoglobin still present but less reliable
             hemoglobin = 13.0 + 0.01 * (a + 20) + np.random.normal(0, 1.0)
             hemoglobin = np.clip(hemoglobin, 5.0, 18.0)
 
         elif mode == "Conjunctiva":
-            # Anemia: hemoglobin from redness (a*) and R
             hemoglobin = 12.0 + 0.03 * (a + 20) + 0.2 * (R/255)*10 + np.random.normal(0, 0.5)
             hemoglobin = np.clip(hemoglobin, 5.0, 18.0)
-            # Bilirubin still present but less reliable
             bilirubin = 0.5 + 0.01 * (b + 50) + np.random.normal(0, 0.8)
             bilirubin = np.clip(bilirubin, 0.2, 20.0)
 
         else:  # Pallor
-            # Both, but pallor_val is key
             bilirubin = 0.5 + 0.02 * (b + 50) + 0.4 * pallor_val + np.random.normal(0, 0.4)
             bilirubin = np.clip(bilirubin, 0.2, 20.0)
             hemoglobin = 13.0 + 0.02 * (a + 20) - 0.8 * pallor_val + np.random.normal(0, 0.6)
@@ -273,7 +268,6 @@ def train_and_save_models_for_mode(mode):
     model_bili.fit(X, y_bili)
     model_hb.fit(X, y_hb)
 
-    # Save with mode prefix
     joblib.dump(model_bili, f'bili_model_{mode}.pkl')
     joblib.dump(model_hb, f'hb_model_{mode}.pkl')
     return model_bili, model_hb
@@ -429,11 +423,11 @@ if uploaded_file is not None:
             <div class='glass-card glass-card-primary'>
                 <div class='metric-label'>{primary_label}</div>
                 <div>
-                    <span class='metric-value'>{primary_value:.2f if primary_value < 100 else primary_value:.1f}</span>
+                    <span class='metric-value'>{primary_value:.2f}</span>
                     <span class='metric-unit'>{primary_unit}</span>
                 </div>
                 <div style='margin-top: 0.5rem;'>
-                    <span class='ci-text'>95% CI: {primary_low:.2f if primary_low < 100 else primary_low:.1f} – {primary_high:.2f if primary_high < 100 else primary_high:.1f}</span>
+                    <span class='ci-text'>95% CI: {primary_low:.2f} – {primary_high:.2f}</span>
                 </div>
                 <div style='margin-top: 0.8rem;'>
                     <span class='badge-{primary_badge}'>{primary_alert}</span>
@@ -452,11 +446,11 @@ if uploaded_file is not None:
             <div class='glass-card'>
                 <div class='metric-label'>{secondary_label}</div>
                 <div>
-                    <span class='metric-value'>{secondary_value:.2f if secondary_value < 100 else secondary_value:.1f}</span>
+                    <span class='metric-value'>{secondary_value:.2f}</span>
                     <span class='metric-unit'>{secondary_unit}</span>
                 </div>
                 <div style='margin-top: 0.5rem;'>
-                    <span class='ci-text'>95% CI: {secondary_low:.2f if secondary_low < 100 else secondary_low:.1f} – {secondary_high:.2f if secondary_high < 100 else secondary_high:.1f}</span>
+                    <span class='ci-text'>95% CI: {secondary_low:.2f} – {secondary_high:.2f}</span>
                 </div>
                 <div style='margin-top: 0.8rem;'>
                     <span class='badge-{secondary_badge}'>{secondary_alert}</span>
