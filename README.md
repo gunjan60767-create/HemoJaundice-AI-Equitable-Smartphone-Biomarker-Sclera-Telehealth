@@ -1,6 +1,6 @@
 # 🩸 HemoJaundice AI: Equitable Smartphone Biomarker & Sclera Telehealth
 
-[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://YOUR-APP-NAME.streamlit.app)
+[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://hemojaundice-ai-equitable-smartphone-biomarker-sclera-telehea.streamlit.app)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 An Equitable Healthcare Computer Vision & Telehealth platform engineered to perform non-invasive **Anemia (Hemoglobin g/dL)** and **Jaundice (Bilirubin mg/dL)** screening from smartphone camera captures of the palpebral conjunctiva, sclera, and skin.
@@ -8,7 +8,7 @@ An Equitable Healthcare Computer Vision & Telehealth platform engineered to perf
 --- 
 
 ## 🌐 Live Application
-👉 **[Test Live Web Demo](https://YOUR-APP-NAME.streamlit.app)**
+👉 **[Test Live Web Demo](https://hemojaundice-ai-equitable-smartphone-biomarker-sclera-telehea.streamlit.app)**
 
 ---
 
