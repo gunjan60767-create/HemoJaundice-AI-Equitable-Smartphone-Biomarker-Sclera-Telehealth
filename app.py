@@ -4,7 +4,6 @@ import pandas as pd
 import cv2
 from PIL import Image
 import plotly.graph_objects as go
-import plotly.express as px
 from sklearn.ensemble import RandomForestRegressor
 import joblib
 import os
@@ -150,15 +149,12 @@ st.markdown("""
 def get_hsv_ranges(mode):
     """Return lower and upper HSV bounds for each screening mode."""
     if mode == "👀 Sclera / Eye White (Jaundice Screening)":
-        # White / light yellow: low saturation, high value
         lower = np.array([0, 0, 150], dtype=np.uint8)
         upper = np.array([180, 50, 255], dtype=np.uint8)
     elif mode == "👁️ Palpebral Conjunctiva (Inner Eye - Anemia Screening)":
-        # Pink / red: medium to high saturation, medium to high value
         lower = np.array([0, 50, 100], dtype=np.uint8)
         upper = np.array([10, 255, 255], dtype=np.uint8)
     elif mode == "🖐️ Fingernail Bed / Inner Lip (General Tissue Pallor)":
-        # Flesh tones: low to medium saturation, medium to high value
         lower = np.array([0, 20, 100], dtype=np.uint8)
         upper = np.array([20, 150, 255], dtype=np.uint8)
     else:
@@ -172,7 +168,6 @@ def extract_segmented_roi_features(image, mode):
     Returns (features, mask) where features is a list of 8 floats:
     [R_mean, G_mean, B_mean, L_chroma, a_chroma, b_chroma, rg_ratio, pallor_val]
     """
-    # Convert RGB to HSV
     hsv = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
     lower, upper = get_hsv_ranges(mode)
     mask = cv2.inRange(hsv, lower, upper)
@@ -182,47 +177,35 @@ def extract_segmented_roi_features(image, mode):
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
 
-    # If mask is empty, fallback to whole image (but we want at least some region)
+    # If mask is empty, fallback to whole image
     if np.sum(mask) < 10:
-        # Use full image as fallback
         mask = np.ones(image.shape[:2], dtype=np.uint8) * 255
 
-    # Extract masked pixels
     masked = cv2.bitwise_and(image, image, mask=mask)
     pixels = masked[mask > 0]
 
     if len(pixels) == 0:
-        # fallback to average of whole image
         pixels = image.reshape(-1, 3)
 
-    # Mean RGB
     R_mean = np.mean(pixels[:, 0])
     G_mean = np.mean(pixels[:, 1])
     B_mean = np.mean(pixels[:, 2])
 
-    # Convert to LAB with proper scaling
-    # Use a copy of the masked region in RGB
-    # We'll compute LAB on the whole masked image (not just pixels) to get per-pixel LAB
-    # but we can compute average LAB from the mean RGB? Actually, average of LAB ≠ LAB of average.
-    # Better: compute LAB for each pixel and average.
+    # LAB conversion with proper scaling
     lab_image = cv2.cvtColor(masked, cv2.COLOR_RGB2LAB)
     lab_pixels = lab_image[mask > 0]
     if len(lab_pixels) == 0:
         lab_pixels = cv2.cvtColor(image, cv2.COLOR_RGB2LAB).reshape(-1, 3)
 
-    L_vals = lab_pixels[:, 0] * (100.0 / 255.0)   # scale to 0-100
-    a_vals = lab_pixels[:, 1] - 128.0            # center
-    b_vals = lab_pixels[:, 2] - 128.0            # center
+    L_vals = lab_pixels[:, 0] * (100.0 / 255.0)
+    a_vals = lab_pixels[:, 1] - 128.0
+    b_vals = lab_pixels[:, 2] - 128.0
 
     L_chroma = np.mean(L_vals)
     a_chroma = np.mean(a_vals)
     b_chroma = np.mean(b_vals)
 
-    # rg_ratio = R/G (avoid division by zero)
     rg_ratio = R_mean / (G_mean + 1e-6)
-
-    # pallor_val: simple measure of paleness (1 - normalized R)
-    # Ranges 0-1, higher = more pale
     pallor_val = 1.0 - (R_mean / 255.0)
 
     features = [R_mean, G_mean, B_mean, L_chroma, a_chroma, b_chroma, rg_ratio, pallor_val]
@@ -231,44 +214,27 @@ def extract_segmented_roi_features(image, mode):
 def generate_synthetic_data(n_samples=300):
     """Generate synthetic calibration data mapping features to bilirubin and hemoglobin."""
     np.random.seed(42)
-    # features: R,G,B,L,a,b,rg_ratio,pallor_val
-    # We'll create plausible ranges:
-    # R,G,B: 0-255
-    # L: 0-100
-    # a: -128 to 127
-    # b: -128 to 127
-    # rg_ratio: 0.5-2.0
-    # pallor_val: 0-1
-
     data = []
     for _ in range(n_samples):
-        # Generate random feature vector with some correlations
         R = np.random.uniform(40, 220)
         G = np.random.uniform(30, 200)
         B = np.random.uniform(20, 180)
-        # L,a,b from RGB via conversion? Simulate with plausible ranges
-        L = 0.299*R + 0.587*G + 0.114*B  # approximate lightness
-        L = L / 255 * 100  # scale to 0-100
+        L = (0.299*R + 0.587*G + 0.114*B) / 255.0 * 100
         a = np.random.uniform(-50, 50)
         b = np.random.uniform(-50, 50)
         rg_ratio = R / (G + 1e-6)
         pallor_val = 1.0 - (R / 255.0)
 
-        # Target bilirubin (mg/dL): correlated with b (yellow) and pallor (pale skin in jaundice?)
-        # Jaundice: high bilirubin -> yellow (positive b), sometimes pale? Actually high bilirubin makes skin yellowish, not pale.
-        # But we'll create relationship: bilirubin increases with b and decreases with L (darkening?) but we'll set:
-        bilirubin = 0.5 + 0.02 * (b + 50) + 0.5 * (pallor_val) + np.random.normal(0, 0.3)
+        bilirubin = 0.5 + 0.02 * (b + 50) + 0.5 * pallor_val + np.random.normal(0, 0.3)
         bilirubin = np.clip(bilirubin, 0.2, 20.0)
 
-        # Target hemoglobin (g/dL): correlated with redness (a positive, R high)
         hemoglobin = 14.0 + 0.02 * (a + 20) - 0.5 * pallor_val + np.random.normal(0, 0.5)
         hemoglobin = np.clip(hemoglobin, 5.0, 18.0)
 
         data.append([R, G, B, L, a, b, rg_ratio, pallor_val, bilirubin, hemoglobin])
 
     columns = ['R','G','B','L','a','b','rg_ratio','pallor_val','bilirubin','hemoglobin']
-    df = pd.DataFrame(data, columns=columns)
-    return df
+    return pd.DataFrame(data, columns=columns)
 
 def train_and_save_models():
     """Train RandomForest models on synthetic data and save to disk."""
@@ -303,7 +269,6 @@ def predict_with_uncertainty(model, features):
     Returns (mean, lower, upper)
     """
     features = np.array(features).reshape(1, -1)
-    # Get predictions from all trees
     tree_preds = np.array([tree.predict(features) for tree in model.estimators_]).flatten()
     mean = np.mean(tree_preds)
     std = np.std(tree_preds)
@@ -340,16 +305,20 @@ with st.sidebar:
 
 # Main content
 if uploaded_file is not None:
-    # Load image
-    img = Image.open(uploaded_file)
-    img_rgb = np.array(img.convert('RGB'))
+    try:
+        # Load image and convert to RGB NumPy array
+        pil_img = Image.open(uploaded_file)
+        img_rgb = np.array(pil_img.convert('RGB'))
+    except Exception as e:
+        st.error(f"Error loading image: {e}")
+        st.stop()
 
     # Extract features and mask
     with st.spinner("Analyzing tissue..."):
         features, mask = extract_segmented_roi_features(img_rgb, mode)
-        # features as list
-        # Prepare mask for display (convert to 3-channel)
+        # Prepare mask overlay (3-channel for visualization)
         mask_3ch = cv2.cvtColor(mask, cv2.COLOR_GRAY2RGB)
+        overlay = cv2.addWeighted(img_rgb, 0.7, mask_3ch, 0.3, 0)
 
     # Load models
     model_bili, model_hb = load_models()
@@ -369,11 +338,9 @@ if uploaded_file is not None:
         st.markdown("### 📷 Original & Segmentation")
         col_img1, col_img2 = st.columns(2)
         with col_img1:
-            st.image(img, caption="Original", use_column_width=True)
+            st.image(img_rgb, caption="Original", use_container_width=True)
         with col_img2:
-            # Overlay mask on original for better visualization
-            overlay = cv2.addWeighted(img_rgb, 0.7, mask_3ch, 0.3, 0)
-            st.image(overlay, caption="ROI Mask (overlay)", use_column_width=True)
+            st.image(overlay, caption="ROI Mask (overlay)", use_container_width=True)
 
         # Show feature vector as a small table
         feat_names = ['R', 'G', 'B', 'L*', 'a*', 'b*', 'R/G', 'Pallor']
@@ -438,12 +405,10 @@ if uploaded_file is not None:
 
         # Uncertainty distribution chart (Plotly)
         st.markdown("**📊 Ensemble Prediction Distribution**")
-        # Get all tree predictions for bilirubin and hemoglobin
         features_arr = np.array(features).reshape(1, -1)
         tree_preds_bili = np.array([tree.predict(features_arr) for tree in model_bili.estimators_]).flatten()
         tree_preds_hb = np.array([tree.predict(features_arr) for tree in model_hb.estimators_]).flatten()
 
-        # Create plotly figure with two histograms (overlay)
         fig = go.Figure()
         fig.add_trace(go.Histogram(
             x=tree_preds_bili,
@@ -463,9 +428,10 @@ if uploaded_file is not None:
             yaxis='y2'
         ))
 
-        # Add mean lines
-        fig.add_vline(x=bili_mean, line_width=2, line_dash="dash", line_color="#fbbf24", annotation_text=f"μ={bili_mean:.2f}")
-        fig.add_vline(x=hb_mean, line_width=2, line_dash="dash", line_color="#f87171", annotation_text=f"μ={hb_mean:.1f}", annotation_position="top")
+        fig.add_vline(x=bili_mean, line_width=2, line_dash="dash", line_color="#fbbf24",
+                      annotation_text=f"μ={bili_mean:.2f}")
+        fig.add_vline(x=hb_mean, line_width=2, line_dash="dash", line_color="#f87171",
+                      annotation_text=f"μ={hb_mean:.1f}", annotation_position="top")
 
         fig.update_layout(
             template="plotly_dark",
@@ -481,7 +447,6 @@ if uploaded_file is not None:
         st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
 
 else:
-    # Placeholder when no image uploaded
     st.info("👆 Upload a photo using the sidebar to begin screening.", icon="ℹ️")
     st.markdown("""
     <div style='display: flex; justify-content: center; margin-top: 2rem;'>
