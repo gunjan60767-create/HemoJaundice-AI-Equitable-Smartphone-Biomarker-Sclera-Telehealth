@@ -181,7 +181,6 @@ def analyze_selected_crop(crop_np, site_mode, tone_group):
     a_chan = lab[:, :, 1].astype(np.float32) - 128.0
     b_chan = lab[:, :, 2].astype(np.float32) - 128.0
 
-    # Optical filter inside the selected box (ignores specular reflection glares)
     valid_pixels = (L_chan > 15) & (L_chan < 98)
     if np.sum(valid_pixels) < 20:
         valid_pixels = np.ones((h, w), dtype=bool)
@@ -192,14 +191,17 @@ def analyze_selected_crop(crop_np, site_mode, tone_group):
     mean_a = float(np.mean(a_chan[valid_pixels]))
     mean_b_chroma = float(np.mean(b_chan[valid_pixels]))
 
+    # Normalized Erythema Index: (R - G) / (R + G)
+    # Healthy perfused mucosal capillaries: EI >= 0.20
+    # Mild Pallor: 0.16 <= EI < 0.20
+    # Severe Anemic Pallor / Washed-out tissue: EI < 0.16
+    norm_ei = (mean_r - mean_g) / (mean_r + mean_g + 1e-5)
+
     np.random.seed(42)
 
     # 1. JAUNDICE / BILIRUBIN QUANTIFICATION (SCLERA)
     if site_mode == "sclera":
-        # Yellow ratio: (R + G) / (2 * B)
         yellow_ratio = (mean_r + mean_g) / (2.0 * mean_b + 1e-4)
-        
-        # Clinical Scleral Icterus Cutoffs:
         if mean_b_chroma >= 14.0 or yellow_ratio >= 1.25:
             base_bili = 2.8 + max(0.0, (mean_b_chroma - 14.0) * 0.25) + max(0.0, (yellow_ratio - 1.25) * 2.0)
         elif 8.0 <= mean_b_chroma < 14.0 or 1.10 <= yellow_ratio < 1.25:
@@ -214,23 +216,14 @@ def analyze_selected_crop(crop_np, site_mode, tone_group):
 
     # 2. ANEMIA / HEMOGLOBIN QUANTIFICATION (CONJUNCTIVA & NAIL BED)
     else:
-        # Peak 30% erythema inside user-chosen box
-        pixel_ei = (R - G) / (R + G + 1e-5)
-        valid_ei = pixel_ei[valid_pixels]
-        sorted_ei = np.sort(valid_ei)
-        top_cut = int(len(sorted_ei) * 0.70)
-        peak_ei = float(np.mean(sorted_ei[top_cut:])) if len(sorted_ei) > 0 else 0.15
-
-        # Cutoffs:
-        # Peak EI >= 0.20 OR high red chroma a* >= 12 -> Normal Perfusion (12.8 - 15.5 g/dL)
-        # 0.13 <= Peak EI < 0.20 -> Mild / Moderate Pallor (10.0 - 12.0 g/dL)
-        # Peak EI < 0.13 AND a* < 10 -> Severe Anemia (< 9.8 g/dL)
-        if peak_ei >= 0.20 or mean_a >= 12.0:
-            base_hb = 12.8 + max(0.0, (peak_ei - 0.20) * 12.0) + max(0.0, (mean_a - 12.0) * 0.08)
-        elif 0.13 <= peak_ei < 0.20:
-            base_hb = 10.1 + ((peak_ei - 0.13) * 35.0)
+        # Strictly driven by Erythema Index (no raw skin-tone a* leakage)
+        if norm_ei >= 0.20:
+            base_hb = 12.8 + ((norm_ei - 0.20) * 16.0)
+        elif 0.16 <= norm_ei < 0.20:
+            base_hb = 10.2 + ((norm_ei - 0.16) * 60.0)
         else:
-            base_hb = 6.8 + max(0.0, peak_ei * 24.0)
+            # Under 0.16 is clinically severe pallor (Hb 7.0 to 9.8 g/dL)
+            base_hb = 7.0 + max(0.0, norm_ei * 18.0)
 
         if tone_group == "Dark": base_hb += 0.20
         elif tone_group == "Light": base_hb -= 0.15
@@ -245,7 +238,7 @@ def analyze_selected_crop(crop_np, site_mode, tone_group):
         "uncert_hb": uncert_hb,
         "pred_bili": pred_bili,
         "uncert_bili": uncert_bili,
-        "peak_ei": (mean_r - mean_g) / (mean_r + mean_g + 1e-5),
+        "peak_ei": norm_ei,
         "a_star": mean_a,
         "b_star": mean_b_chroma
     }
