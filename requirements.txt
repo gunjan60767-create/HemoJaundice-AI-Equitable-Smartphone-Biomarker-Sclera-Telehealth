@@ -1,7 +1,8 @@
 streamlit
-numpy
 opencv-python-headless
 Pillow
+numpy
 plotly
-scikit-learn
-joblib
+torch
+torchvision
+transformers
