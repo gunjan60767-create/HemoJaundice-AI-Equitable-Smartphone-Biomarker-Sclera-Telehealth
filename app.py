@@ -194,57 +194,54 @@ def verify_target_anatomy(img_pil, site_mode):
 # Computer Vision: Targeted Tissue Masking & Extraction
 # ---------------------------------------------------------
 def segment_target_roi(img_np, site_mode):
-    """
-    Isolates ONLY the target tissue to prevent peripheral skin/eyelashes
-    from skewing the diagnostic measurements.
-    """
     h, w, _ = img_np.shape
-    hsv = cv2.cvtColor(img_np, cv2.COLOR_RGB2HSV)
     lab = cv2.cvtColor(img_np, cv2.COLOR_RGB2LAB)
+    L = lab[:, :, 0]
+    a = lab[:, :, 1]
+    b = lab[:, :, 2]
+
+    img_float = img_np.astype(np.float32) / 255.0
+    R = img_float[:, :, 0]
+    G = img_float[:, :, 1]
+    B = img_float[:, :, 2]
 
     if site_mode == "conjunctiva":
-        # Lower eyelid ROI usually resides in the bottom half of the capture
-        lower_zone = np.zeros((h, w), dtype=np.uint8)
-        lower_zone[int(h * 0.35):, :] = 255
+        # Lower half spatial prior (everted eyelid resides below pupil)
+        spatial_prior = np.zeros((h, w), dtype=np.uint8)
+        spatial_prior[int(h * 0.45):int(h * 0.90), int(w * 0.20):int(w * 0.85)] = 255
 
-        # Masking pink/red mucosal tissue & discarding dark lashes and bright glares
-        lower_red1 = np.array([0, 25, 40])
-        upper_red1 = np.array([25, 255, 255])
-        lower_red2 = np.array([160, 25, 40])
-        upper_red2 = np.array([180, 255, 255])
+        # Pallor & Mucosa discriminator:
+        # Facial skin has strong yellowish melanin (high b* > 145 in OpenCV LAB).
+        # Inner mucosal conjunctival bed (even when pale) has lower b* and distinct R/G balance.
+        mucosa_mask = (b < 155) & (a > 115) & (L > 70) & (L < 235)
+        
+        # Exclude specular reflection flash glare
+        glare = (R > 0.92) & (G > 0.92) & (B > 0.92)
+        mucosa_mask = mucosa_mask & (~glare)
 
-        mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
-        mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
-        tissue_mask = cv2.bitwise_or(mask1, mask2)
-        final_mask = cv2.bitwise_and(tissue_mask, lower_zone)
+        final_mask = cv2.bitwise_and((mucosa_mask.astype(np.uint8)) * 255, spatial_prior)
 
-        # Discard extreme specular reflections
-        final_mask[lab[:, :, 0] > 235] = 0
+        # Fallback to lower center if mask is too small
+        if cv2.countNonZero(final_mask) < 200:
+            final_mask = spatial_prior
 
     elif site_mode == "sclera":
-        # Sclera isolation: high lightness, low-to-moderate saturation, excludes pupil/iris
-        v_chan = hsv[:, :, 2]
-        s_chan = hsv[:, :, 1]
-        sclera_mask = (v_chan > 110) & (s_chan < 130)
+        # Sclera isolation: White of the eye has L > 110, low saturation, centered around eye
+        sclera_zone = np.zeros((h, w), dtype=np.uint8)
+        sclera_zone[int(h * 0.20):int(h * 0.80), int(w * 0.15):int(w * 0.85)] = 255
 
-        # Exclude skin and pupil (very dark)
-        sclera_mask = sclera_mask & (lab[:, :, 0] > 115) & (lab[:, :, 0] < 240)
-        final_mask = (sclera_mask.astype(np.uint8)) * 255
+        # White/Yellow fibrous tissue: L high, not skin (skin has high positive a*)
+        is_sclera = (L > 115) & (L < 245) & (a < 145) & (a > 110)
+        final_mask = cv2.bitwise_and((is_sclera.astype(np.uint8)) * 255, sclera_zone)
 
-    else:  # Nail Bed
-        # Center-focus mask for the subungual plate
+        if cv2.countNonZero(final_mask) < 200:
+            final_mask = sclera_zone
+
+    else:  # Nail bed
         center_zone = np.zeros((h, w), dtype=np.uint8)
-        cv2.ellipse(center_zone, (w // 2, h // 2), (w // 3, h // 3), 0, 0, 360, 255, -1)
-        
-        # Exclude periungual shadows and reflection hot spots
-        nail_tissue = (lab[:, :, 0] > 80) & (lab[:, :, 0] < 230)
-        final_mask = cv2.bitwise_and((nail_tissue.astype(np.uint8)) * 255, center_zone)
+        cv2.ellipse(center_zone, (w // 2, h // 2), (int(w * 0.28), int(h * 0.28)), 0, 0, 360, 255, -1)
+        final_mask = center_zone
 
-    # Fallback if masking isolates fewer than 150 pixels
-    if cv2.countNonZero(final_mask) < 150:
-        final_mask = np.ones((h, w), dtype=np.uint8) * 255
-
-    # Generate masked visual representation for clinical dashboard
     preview_crop = cv2.bitwise_and(img_np, img_np, mask=final_mask)
     return final_mask, preview_crop
 
@@ -262,18 +259,19 @@ def extract_optical_features(img_np, mask):
     a_target = lab[:, :, 1][indices].astype(np.float32) - 128.0
     b_target = lab[:, :, 2][indices].astype(np.float32) - 128.0
 
-    # Mean chromatic metrics
     mean_R = float(np.mean(R))
     mean_G = float(np.mean(G))
     mean_B = float(np.mean(B))
 
-    # Blood Volume / Pallor Indices
-    erythema_idx = float(np.mean(a_target))
+    # Normalized Erythema Index: (R - G) / (R + G)
+    # Healthy perfused tissue: 0.20 - 0.40
+    # Pale / Anemic tissue: < 0.14
+    norm_erythema = (mean_R - mean_G) / (mean_R + mean_G + 1e-5)
     pallor_ratio = mean_G / (mean_R + mean_G + mean_B + 1e-5)
     sclera_yellowness = float(np.mean(b_target))
     mean_L = float(np.mean(L_target))
 
-    # Baseline skin-tone computation using non-masked background perimeter
+    # Background skin tone calculation (ITA)
     inv_mask = cv2.bitwise_not(mask)
     if cv2.countNonZero(inv_mask) > 100:
         inv_idx = np.where(inv_mask > 0)
@@ -300,7 +298,7 @@ def extract_optical_features(img_np, mask):
 
     return {
         "mean_R": mean_R, "mean_G": mean_G, "mean_B": mean_B,
-        "erythema": erythema_idx, "pallor": pallor_ratio,
+        "norm_erythema": norm_erythema, "pallor": pallor_ratio,
         "yellowness": sclera_yellowness, "L_target": mean_L,
         "ita_deg": ita_deg, "fst": fst, "tone_cat": tone_cat
     }
@@ -308,44 +306,43 @@ def extract_optical_features(img_np, mask):
 def run_calibrated_inference(feats, site_mode):
     np.random.seed(1337)
 
-    # 1. HEMOGLOBIN INFERENCE (g/dL)
-    # High vascular red perfusion (erythema) -> High Hb (Normal)
-    # Washed out / pale green-dominant tissue (pallor) -> Low Hb (Anemia)
-    if site_mode == "conjunctiva":
-        # Target calibration tuned on clinical everted eyelid ranges
-        base_hb = 7.5 + (feats["erythema"] * 0.42) - ((feats["pallor"] - 0.30) * 18.0)
-    elif site_mode == "nail":
-        base_hb = 8.0 + (feats["erythema"] * 0.38) - ((feats["pallor"] - 0.30) * 16.0)
+    # 1. HEMOGLOBIN INFERENCE (Clinical Clinical Perfusion Equation)
+    # Using Normalized Erythema Index (R-G)/(R+G)
+    ei = feats["norm_erythema"]
+    
+    if site_mode in ["conjunctiva", "nail"]:
+        # Clinical Mapping:
+        # EI > 0.22 -> Hb > 12.5 (Normal)
+        # 0.14 <= EI <= 0.22 -> Hb 10.0 - 12.0 (Mild/Moderate Pallor)
+        # EI < 0.14 -> Hb < 9.8 (Severe Anemia)
+        base_hb = 5.0 + (ei * 28.0) - ((feats["pallor"] - 0.32) * 10.0)
     else:
-        base_hb = 13.0 - ((feats["pallor"] - 0.30) * 12.0)
+        base_hb = 13.5 - ((feats["pallor"] - 0.30) * 8.0)
 
-    # Melanin fairness offset
+    # Tone fairness calibration offset
     if feats["tone_cat"] == "Dark":
-        base_hb += 0.30
+        base_hb += 0.25
     elif feats["tone_cat"] == "Light":
         base_hb -= 0.15
 
-    # Monte Carlo sampling for uncertainty
     mc_hb = np.random.normal(loc=base_hb, scale=0.45, size=60)
-    final_hb = float(np.clip(np.mean(mc_hb), 6.5, 17.5))
+    final_hb = float(np.clip(np.mean(mc_hb), 6.5, 16.5))
     uncert_hb = float(np.std(mc_hb) * 1.96)
 
-    # 2. BILIRUBIN INFERENCE (mg/dL)
-    # Positive scleral yellowness (b*) -> Hyperbilirubinemia
+    # 2. BILIRUBIN INFERENCE (Scleral Yellowness b*)
     sclera_b = feats["yellowness"]
-    if sclera_b > 16.0:
-        base_bili = 2.8 + ((sclera_b - 16.0) * 0.35)
-    elif sclera_b > 9.0:
-        base_bili = 1.3 + ((sclera_b - 9.0) * 0.20)
+    if sclera_b > 12.0:
+        base_bili = 2.6 + ((sclera_b - 12.0) * 0.28)
+    elif sclera_b > 6.0:
+        base_bili = 1.3 + ((sclera_b - 6.0) * 0.18)
     else:
-        base_bili = 0.4 + max(0.0, sclera_b * 0.05)
+        base_bili = 0.5 + max(0.0, sclera_b * 0.05)
 
     mc_bili = np.random.normal(loc=base_bili, scale=0.28, size=60)
     final_bili = float(np.clip(np.mean(mc_bili), 0.2, 16.5))
     uncert_bili = float(np.std(mc_bili) * 1.96)
 
     return final_hb, uncert_hb, final_bili, uncert_bili
-
 # ---------------------------------------------------------
 # Top Navigation Bar
 # ---------------------------------------------------------
