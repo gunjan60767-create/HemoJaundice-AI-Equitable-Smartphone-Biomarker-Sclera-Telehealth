@@ -310,26 +310,55 @@ if uploaded_file is not None:
         st.markdown('</div>', unsafe_allow_html=True)
 
     # Plotly Gaussian Distribution
+   # Plotly Calibrated Confidence & Distribution Gauge
     st.markdown('<div class="clinical-card">', unsafe_allow_html=True)
-    st.markdown('<div class="card-heading">📊 Calibrated Hemoglobin & Uncertainty Distribution Spectrum</div>', unsafe_allow_html=True)
+    st.markdown('#### 📊 Calibrated Hemoglobin & Uncertainty Distribution Spectrum')
     
-    x_range = np.linspace(max(4, pred_hb - 3.5), min(20, pred_hb + 3.5), 100)
-    sigma = uncert_hb / 1.96
-    y_density = (1 / (sigma * np.sqrt(2 * np.pi))) * np.exp(-0.5 * ((x_range - pred_hb) / sigma) ** 2)
+    # Generate Gaussian density curve for calibrated prediction
+    x_range = np.linspace(max(4.0, pred_hb - 4.0), min(22.0, pred_hb + 4.0), 120)
+    sigma = max(0.1, uncert_hb / 1.96)
+    y_density = (1.0 / (sigma * np.sqrt(2 * np.pi))) * np.exp(-0.5 * ((x_range - pred_hb) / sigma) ** 2)
 
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=x_range, y=y_density, mode='lines', fill='tozeroy', fillcolor='rgba(45, 212, 191, 0.25)', line=dict(color='#2dd4bf', width=3), name='Posterior Density'))
-    fig.add_vrect(x0=12.0, x1=16.0, fillcolor="rgba(16, 185, 129, 0.12)", layer="below", line_width=0, annotation_text="Normal Reference (12-16 g/dL)", annotation_font_color="#34d399")
-    fig.add_vline(x=12.0, line_dash="dash", line_color="#f59e0b", annotation_text="Mild Anemia Cutoff (12.0)", annotation_font_color="#fbbf24")
-    fig.add_vline(x=10.0, line_dash="dash", line_color="#ef4444", annotation_text="Severe Anemia Cutoff (10.0)", annotation_font_color="#f87171")
+    
+    # Posterior curve
+    fig.add_trace(go.Scatter(
+        x=x_range,
+        y=y_density,
+        mode='lines',
+        fill='tozeroy',
+        fillcolor='rgba(45, 212, 191, 0.25)',
+        line=dict(color='#2dd4bf', width=3),
+        name='Posterior Density'
+    ))
+    
+    # Normal Reference Range Box (12 to 16 g/dL)
+    fig.add_vrect(
+        x0=12.0, 
+        x1=16.0, 
+        fillcolor="rgba(16, 185, 129, 0.15)", 
+        layer="below", 
+        line_width=0,
+        annotation_text="Normal Reference (12-16 g/dL)"
+    )
+    
+    # Cutoff threshold lines
+    fig.add_vline(x=12.0, line_dash="dash", line_color="#f59e0b", annotation_text="Mild Anemia (12.0)")
+    fig.add_vline(x=10.0, line_dash="dash", line_color="#ef4444", annotation_text="Severe Anemia (10.0)")
 
+    # Clean layout with universal compatibility
     fig.update_layout(
         plot_bgcolor='rgba(0,0,0,0)',
         paper_bgcolor='rgba(0,0,0,0)',
-        margin=dict(l=20, r=20, t=20, b=20),
-        xaxis=dict(title="Estimated Hemoglobin Level (g/dL)", titlefont=dict(color="#94a3b8"), tickfont=dict(color="#64748b"), gridcolor='rgba(255, 255, 255, 0.05)'),
-        yaxis=dict(showticklabels=False, showgrid=False),
-        height=280
+        margin=dict(l=20, r=20, t=25, b=20),
+        xaxis=dict(
+            title="Estimated Hemoglobin Level (g/dL)",
+            gridcolor='rgba(255, 255, 255, 0.08)'
+        ),
+        yaxis=dict(
+            visible=False
+        ),
+        height=300
     )
     st.plotly_chart(fig, use_container_width=True)
     st.markdown('</div>', unsafe_allow_html=True)
