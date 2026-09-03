@@ -8,7 +8,7 @@ import plotly.graph_objects as go
 # Page Setup & Clinical Styling
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="HemoJaundice AI • Clinical Tissue Biomarker Telehealth",
+    page_title="HemoJaundice AI • Clinical Ophthalmic Telehealth Suite",
     page_icon="🩺",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -167,7 +167,7 @@ def calculate_ita(img_np):
     return ita_deg, fst, tone_group
 
 # ---------------------------------------------------------
-# Optical Biomarker Inference on User-Selected ROI
+# Ophthalmic Optical Biomarker Engine
 # ---------------------------------------------------------
 def analyze_selected_crop(crop_np, site_mode, tone_group):
     h, w, _ = crop_np.shape
@@ -181,6 +181,7 @@ def analyze_selected_crop(crop_np, site_mode, tone_group):
     a_chan = lab[:, :, 1].astype(np.float32) - 128.0
     b_chan = lab[:, :, 2].astype(np.float32) - 128.0
 
+    # Optical filter inside bounding box (rejects flash reflections and dark shadows)
     valid_pixels = (L_chan > 15) & (L_chan < 98)
     if np.sum(valid_pixels) < 20:
         valid_pixels = np.ones((h, w), dtype=bool)
@@ -192,16 +193,15 @@ def analyze_selected_crop(crop_np, site_mode, tone_group):
     mean_b_chroma = float(np.mean(b_chan[valid_pixels]))
 
     # Normalized Erythema Index: (R - G) / (R + G)
-    # Healthy perfused mucosal capillaries: EI >= 0.20
-    # Mild Pallor: 0.16 <= EI < 0.20
-    # Severe Anemic Pallor / Washed-out tissue: EI < 0.16
     norm_ei = (mean_r - mean_g) / (mean_r + mean_g + 1e-5)
 
     np.random.seed(42)
 
-    # 1. JAUNDICE / BILIRUBIN QUANTIFICATION (SCLERA)
+    # 1. BULBAR SCLERA (JAUNDICE / BILIRUBIN QUANTIFICATION)
     if site_mode == "sclera":
         yellow_ratio = (mean_r + mean_g) / (2.0 * mean_b + 1e-4)
+
+        # Scleral Icterus Cutoffs
         if mean_b_chroma >= 14.0 or yellow_ratio >= 1.25:
             base_bili = 2.8 + max(0.0, (mean_b_chroma - 14.0) * 0.25) + max(0.0, (yellow_ratio - 1.25) * 2.0)
         elif 8.0 <= mean_b_chroma < 14.0 or 1.10 <= yellow_ratio < 1.25:
@@ -214,17 +214,18 @@ def analyze_selected_crop(crop_np, site_mode, tone_group):
         uncert_bili = float(np.std(mc) * 1.96)
         pred_hb, uncert_hb = 13.5, 0.80
 
-    # 2. ANEMIA / HEMOGLOBIN QUANTIFICATION (CONJUNCTIVA & NAIL BED)
+    # 2. PALPEBRAL CONJUNCTIVA (ANEMIA / HEMOGLOBIN QUANTIFICATION)
     else:
-        # Strictly driven by Erythema Index (no raw skin-tone a* leakage)
+        # Driven by mucosal microvascular capillary perfusion (EI)
         if norm_ei >= 0.20:
             base_hb = 12.8 + ((norm_ei - 0.20) * 16.0)
         elif 0.16 <= norm_ei < 0.20:
             base_hb = 10.2 + ((norm_ei - 0.16) * 60.0)
         else:
-            # Under 0.16 is clinically severe pallor (Hb 7.0 to 9.8 g/dL)
+            # Pallor / washed out capillary bed: Anemia
             base_hb = 7.0 + max(0.0, norm_ei * 18.0)
 
+        # Melanin offset calibration
         if tone_group == "Dark": base_hb += 0.20
         elif tone_group == "Light": base_hb -= 0.15
 
@@ -250,45 +251,40 @@ st.markdown("""
 <div class="hospital-nav">
     <div class="brand-title">
         <span>🩺</span>
-        <span>HemoJaundice AI <span style="font-size: 0.85rem; font-weight: 500; color: #94a3b8;">| Targeted Clinical Telehealth Suite</span></span>
+        <span>HemoJaundice AI <span style="font-size: 0.85rem; font-weight: 500; color: #94a3b8;">| Ophthalmic Telehealth Suite</span></span>
     </div>
     <div class="status-pill">
         <div class="status-pulse"></div>
-        <span>Interactive ROI Isolation Active</span>
+        <span>Target Tissue ROI Active</span>
     </div>
 </div>
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# Sidebar Protocol Selection
+# Sidebar Protocol Selection (Only 2 Ophthalmic Tests)
 # ---------------------------------------------------------
 with st.sidebar:
     st.markdown("### 🎛️ Diagnostic Protocol")
     selected_target = st.radio(
         "Select Active Anatomical Screening Site:",
         [
-            "👀 Bulbar Sclera (Eye White - Jaundice)",
             "👁️ Palpebral Conjunctiva (Inner Eyelid - Anemia)",
-            "🖐️ Subungual Fingernail Bed (Capillary Pallor)"
+            "👀 Bulbar Sclera (Eye White - Jaundice)"
         ],
         index=0
     )
 
-    if "Sclera" in selected_target:
-        site_mode = "sclera"
-        site_label = "Bulbar Sclera (Eye White)"
-        accent_color = "#fbbf24"
-    elif "Conjunctiva" in selected_target:
+    if "Conjunctiva" in selected_target:
         site_mode = "conjunctiva"
         site_label = "Palpebral Conjunctiva (Inner Eyelid)"
         accent_color = "#38bdf8"
     else:
-        site_mode = "nail"
-        site_label = "Subungual Fingernail Bed"
-        accent_color = "#2dd4bf"
+        site_mode = "sclera"
+        site_label = "Bulbar Sclera (Eye White)"
+        accent_color = "#fbbf24"
 
     st.divider()
-    st.markdown("### 📋 Protocol Specifications")
+    st.markdown("### 📋 Clinical Protocol Specs")
     st.markdown("""
     - **Target Isolation:** Interactive Spatial Bounding Box
     - **Jaundice Index:** Scleral $b^*$ Chromaticity & Yellow Ratio
@@ -324,18 +320,15 @@ if uploaded_file is not None:
         st.markdown('<div class="clinical-card">', unsafe_allow_html=True)
         st.markdown('<div class="card-heading">🔬 Target Region of Interest (ROI)</div>', unsafe_allow_html=True)
 
-        st.info("💡 **Position the box:** Use the sliders below to place the green box ONLY on the target tissue (the red vascular rim for anemia, or the yellow/white eye area for jaundice). This discards text, fingers, and eyelashes.")
+        st.info("💡 **Position the box:** Adjust the sliders below so the green box isolates ONLY the target tissue (the red vascular rim for anemia, or the yellow/white sclera for jaundice). This discards text, fingers, and eyelashes.")
 
-        # Interactive Sliders
+        # Interactive Sliders for the 2 Eye Modalities
         if site_mode == "sclera":
             y_range = st.slider("Vertical Position (% of image):", 0, 100, (25, 70))
             x_range = st.slider("Horizontal Position (% of image):", 0, 100, (10, 50))
-        elif site_mode == "conjunctiva":
+        else:  # conjunctiva
             y_range = st.slider("Vertical Position (% of image):", 0, 100, (40, 75))
             x_range = st.slider("Horizontal Position (% of image):", 0, 100, (15, 65))
-        else:
-            y_range = st.slider("Vertical Position (% of image):", 0, 100, (20, 80))
-            x_range = st.slider("Horizontal Position (% of image):", 0, 100, (20, 80))
 
         y1, y2 = int(h * (y_range[0] / 100.0)), int(h * (y_range[1] / 100.0))
         x1, x2 = int(w * (x_range[0] / 100.0)), int(w * (x_range[1] / 100.0))
@@ -406,10 +399,9 @@ if uploaded_file is not None:
             </div>
             """, unsafe_allow_html=True)
 
-        # ANEMIA MODE
+        # CONJUNCTIVA (ANEMIA) MODE
         else:
-            panel_title = "Conjunctival Hemoglobin Assessment" if site_mode == "conjunctiva" else "Subungual Capillary Perfusion"
-            st.markdown(f'<div class="card-heading">🩺 {panel_title}</div>', unsafe_allow_html=True)
+            st.markdown('<div class="card-heading">🩺 Conjunctival Hemoglobin Assessment</div>', unsafe_allow_html=True)
 
             pred_h = res["pred_hb"]
             uncert_h = res["uncert_hb"]
@@ -417,7 +409,7 @@ if uploaded_file is not None:
             if pred_h < 10.0:
                 badge = '<span class="badge-critical">🚨 Severe Anemia Detected</span>'
                 icd = "ICD-10-CM D64.9"
-                protocol = "Marked microvascular pallor detected in target tissue. Immediate complete blood count (CBC), serum ferritin, and iron panel advised."
+                protocol = "Marked microvascular pallor detected in conjunctival mucosal bed. Immediate complete blood count (CBC), serum ferritin, and iron panel advised."
             elif 10.0 <= pred_h < 12.0:
                 badge = '<span class="badge-warning">⚠️ Mild / Moderate Pallor</span>'
                 icd = "ICD-10-CM D50.9"
@@ -440,7 +432,7 @@ if uploaded_file is not None:
             st.markdown(f"""
             <div style="background: rgba(15, 23, 42, 0.85); border-left: 3px solid #38bdf8; padding: 14px; border-radius: 0 10px 10px 0; font-size: 0.88rem; color: #cbd5e1;">
                 <strong style="color: #f8fafc;">Diagnostic Interpretation:</strong><br>
-                Selected Tissue Erythema: <strong>{res['peak_ei']:.3f}</strong> (a* = {res['a_star']:.2f}), compensated for melanin across <strong>{fitz_scale}</strong>.<br>
+                Selected Tissue Erythema (EI): <strong>{res['peak_ei']:.3f}</strong> (a* = {res['a_star']:.2f}), compensated for melanin across <strong>{fitz_scale}</strong>.<br>
                 <strong>Clinical Action Plan:</strong> {protocol}
             </div>
             """, unsafe_allow_html=True)
